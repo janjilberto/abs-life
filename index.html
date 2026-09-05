@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="it" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Warehouse Pro | Gestione Magazzino</title>
+    <!-- Tailwind CSS 4 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- D3.js for Stats -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <!-- Supabase -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        
+        :root {
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: #020617;
+            color: #f1f5f9;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(234, 88, 12, 0.05) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(30, 41, 59, 0.2) 0px, transparent 50%);
+        }
+
+        .font-mono { font-family: var(--font-mono); }
+
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+        @keyframes scanline {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+        .scanline-effect::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(to bottom, transparent, rgba(234, 88, 12, 0.03), transparent);
+            height: 100px;
+            width: 100%;
+            animation: scanline 4s linear infinite;
+            pointer-events: none;
+        }
+
+        @keyframes flash-red {
+            0% { background-color: transparent; }
+            30% { background-color: rgba(153, 27, 27, 0.6); box-shadow: inset 0 0 20px rgba(153, 27, 27, 0.4); }
+            100% { background-color: transparent; }
+        }
+        .flash-red-effect { animation: flash-red 1.5s ease-out; }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        /* Staggered Row Entry */
+        #articoliBody tr {
+            opacity: 0;
+        }
+        #articoliBody tr.loaded {
+            opacity: 1;
+            transition: opacity 0.3s ease-out;
+        }
+
+        /* Fix for White Input Autofill */
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover, 
+        input:-webkit-autofill:focus,
+        input:-webkit-autofill:active {
+            -webkit-box-shadow: 0 0 0 30px #020617 inset !important;
+            -webkit-text-fill-color: white !important;
+            transition: background-color 5000s ease-in-out 0s;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #020617; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+        /* Legal Panel Toggle */
+        #legalPanel.minimized {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            overflow: hidden;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="h-full overflow-hidden">
+
+    <!-- Legal Notice Panel -->
+    <div id="legalPanel" onclick="toggleLegalPanel()" class="fixed bottom-2 right-2 z-[200] glass-panel border border-slate-800 p-2 rounded-xl shadow-2xl transition-all duration-500 minimized flex items-center justify-center group hover:border-orange-500/30 text-slate-500 hover:text-orange-500/70">
+        <div id="legalIcon" class="text-slate-500 group-hover:text-orange-500 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+        </div>
+        <div id="legalText" class="hidden opacity-0 transition-opacity duration-300 w-64">
+            <p class="text-[11px] text-slate-300 leading-relaxed font-medium">
+                Questo sito è di proprietà di <span class="text-orange-500 font-bold">Carlo Giorgetti</span>.<br>
+                Ogni uso non autorizzato sarà perseguito a norma di legge.
+            </p>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div id="loginModal" class="fixed inset-0 bg-slate-950 z-[100] flex items-center justify-center p-4">
+        <div class="bg-slate-900 p-8 rounded-3xl border border-slate-800 w-full max-w-sm text-center shadow-2xl animate-fade-in">
+            <div class="w-16 h-16 bg-orange-600/20 text-orange-500 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <h2 class="text-white text-2xl font-bold mb-2">Accesso Riservato</h2>
+            <p class="text-slate-400 text-sm mb-6">Inserisci la password aziendale</p>
+            <input type="password" id="passInput" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white mb-4 outline-none focus:ring-2 focus:ring-orange-600 transition" placeholder="Password">
+            <button onclick="checkPassword()" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-xl transition-all active:scale-95 shadow-lg shadow-orange-600/20">Accedi al Sistema</button>
+            <p id="errorMsg" class="text-red-500 text-xs mt-4 hidden">Password errata!</p>
+        </div>
+    </div>
+
+    <div class="flex h-full">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-slate-900 border-r border-slate-800 h-full flex flex-col hidden md:flex">
+            <div class="p-6 border-b border-slate-800">
+                <img src="logo.png" alt="Logo Aziendale" class="h-10 w-auto">
+            </div>
+            
+            <nav class="flex-1 p-4 space-y-2 overflow-y-auto">
+                <button onclick="switchTab('inventory')" data-tab="inventory" class="nav-item flex items-center gap-3 w-full p-3 rounded-xl text-left transition text-white bg-orange-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+                    <span>Inventario</span>
+                </button>
+                <button onclick="switchTab('stats')" data-tab="stats" class="nav-item flex items-center gap-3 w-full p-3 rounded-xl text-left transition text-slate-400 hover:bg-slate-800">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+                    <span>Statistiche</span>
+                </button>
+                <button onclick="switchTab('add')" data-tab="add" class="nav-item flex items-center gap-3 w-full p-3 rounded-xl text-left transition text-slate-400 hover:bg-slate-800">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                    <span>Aggiungi Articolo</span>
+                </button>
+            </nav>
+
+            <div class="p-4 border-t border-slate-800 space-y-2">
+                <!-- Discrete Advanced Tools -->
+                <button onclick="switchTab('data')" data-tab="data" class="nav-item flex items-center gap-3 w-full p-2 rounded-lg text-left transition text-slate-600 hover:text-slate-400 hover:bg-slate-800/30 group">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-40 group-hover:opacity-100"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    <span class="text-[11px] font-medium uppercase tracking-wider">Gestione Dati</span>
+                </button>
+                <button onclick="logout()" class="flex items-center gap-3 w-full p-3 rounded-xl text-left text-slate-400 hover:bg-red-900/20 hover:text-red-400 transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+                    <span>Logout</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 flex flex-col h-full bg-[#020617]">
+            <!-- Topbar -->
+            <header class="h-16 border-b border-slate-800 flex items-center justify-between px-6 shrink-0 bg-slate-900 md:bg-transparent">
+                <div class="md:hidden flex items-center gap-2">
+                    <div class="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center font-bold text-white">W</div>
+                </div>
+                <div class="relative w-full max-w-md">
+                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                    <input type="text" id="globalSearch" oninput="debouncedSearch()" placeholder="Cerca Marca, Modello, Centralina o Scaffale..." class="w-full bg-slate-900 md:bg-slate-800 border border-slate-800 md:border-transparent rounded-xl pl-10 pr-4 py-2 text-sm text-white focus:ring-2 focus:ring-orange-600 focus:bg-slate-800 transition outline-none">
+                </div>
+                <div class="flex items-center gap-4 ml-4">
+                    <div class="text-right hidden sm:block">
+                        <p class="text-[10px] text-slate-500 uppercase tracking-widest font-semibold leading-none mb-1">Status Sistema</p>
+                        <p class="text-xs text-emerald-500 flex items-center justify-end gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Online</p>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Sections Container -->
+            <div class="flex-1 overflow-y-auto p-4 md:p-8">
+                
+                <!-- Tab: Inventory -->
+                <section id="tab-inventory" class="app-tab space-y-6">
+                    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <h1 class="text-2xl font-bold">Inventario Articoli</h1>
+                        <div class="flex gap-2 self-start md:self-auto">
+                            <button id="btnToggleFilters" onclick="toggleFiltersMenu()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2 border border-slate-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                                Filtri
+                            </button>
+                            <button onclick="switchTab('add')" class="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                                Nuovo Articolo
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Filter Bar -->
+                    <div id="filtersMenu" class="hidden bg-slate-900 p-4 rounded-2xl border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-4 animate-fade-in">
+                        <div class="space-y-1">
+                            <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Filtra per Marca</label>
+                            <select id="filterMarca" onchange="renderInventory()" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-300 outline-none focus:ring-1 focus:ring-orange-600 transition">
+                                <option value="">Tutte le marche</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1">
+                            <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Filtra per Posizione</label>
+                            <select id="filterPosizione" onchange="renderInventory()" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-300 outline-none focus:ring-1 focus:ring-orange-600 transition">
+                                <option value="">Tutte le posizioni</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1">
+                            <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">Filtra per Modello</label>
+                            <select id="filterModello" onchange="renderInventory()" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-300 outline-none focus:ring-1 focus:ring-orange-600 transition">
+                                <option value="">Tutti i modelli</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl relative scanline-effect">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-slate-800/50 text-slate-400 text-[10px] uppercase tracking-wider font-bold">
+                                <tr>
+                                    <th class="p-4">Staffale</th>
+                                    <th class="p-4">Marca</th>
+                                    <th class="p-4">Modello</th>
+                                    <th class="p-4">Centralina</th>
+                                    <th class="p-4">Quantità</th>
+                                    <th class="p-4 text-right">Azioni</th>
+                                </tr>
+                            </thead>
+                            <tbody id="articoliBody" class="text-sm divide-y divide-slate-800">
+                                <!-- JS Rendered -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Tab: Stats -->
+                <!-- Tab: Data Management -->
+                <section id="tab-data" class="app-tab hidden space-y-6">
+                    <div class="flex items-center justify-between">
+                        <h1 class="text-2xl font-bold">Gestione Dati</h1>
+                        <div class="flex gap-2">
+                             <a href="#" onclick="downloadTemplate()" class="text-[10px] text-slate-500 hover:text-orange-500 flex items-center gap-1 transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                Scarica Template CSV
+                             </a>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- Export Card -->
+                        <div class="bg-slate-900 p-8 rounded-3xl border border-slate-800 shadow-2xl space-y-4">
+                            <div class="w-12 h-12 bg-emerald-500/20 text-emerald-500 rounded-2xl flex items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                            </div>
+                            <h2 class="text-xl font-bold">Esporta Database</h2>
+                            <p class="text-slate-400 text-sm">Scarica l'intero inventario in formato CSV compatibile con Excel.</p>
+                            <button onclick="exportToExcel()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold transition flex items-center justify-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                Scarica Backup .CSV
+                            </button>
+                        </div>
+
+                        <!-- Import Card -->
+                        <div class="bg-slate-900 p-8 rounded-3xl border border-slate-800 shadow-2xl space-y-4">
+                            <div class="w-12 h-12 bg-orange-500/20 text-orange-500 rounded-2xl flex items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                            </div>
+                            <h2 class="text-xl font-bold">Importa CSV</h2>
+                            <p class="text-slate-400 text-sm">Carica un file CSV per aggiungere articoli in blocco.</p>
+                            
+                            <label class="block w-full cursor-pointer">
+                                <span class="sr-only">Scegli file CSV</span>
+                                <input type="file" id="csvFileInput" accept=".csv" class="block w-full text-sm text-slate-500
+                                  file:mr-4 file:py-2 file:px-4
+                                  file:rounded-xl file:border-0
+                                  file:text-sm file:font-semibold
+                                  file:bg-orange-600/10 file:text-orange-500
+                                  hover:file:bg-orange-600/20
+                                " onchange="handleCSVImport(event)">
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                        <h3 class="text-slate-300 font-bold mb-3 flex items-center gap-2 text-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                            Istruzioni Formato CSV
+                        </h3>
+                        <p class="text-xs text-slate-500 leading-relaxed">
+                            L'intestazione del file deve essere: <code class="text-orange-400">Posizione,Marca,Modello,N. Centralina,Quantita,Note</code><br>
+                            I separatori devono essere virgole ( , ). Il sistema ignorerà automaticamente gli articoli con un Numero Centralina già esistente nel database.
+                        </p>
+                    </div>
+                </section>
+
+                <section id="tab-stats" class="app-tab hidden space-y-6">
+                    <h1 class="text-2xl font-bold">Dashboard Analitica</h1>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <!-- Chart 1: Brands -->
+                        <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl">
+                            <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Distribuzione per Marca</h3>
+                            <div id="chart-brands" class="min-h-[300px]"></div>
+                        </div>
+
+                        <!-- Chart 2: Models -->
+                        <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl">
+                            <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Top 10 Modelli</h3>
+                            <div id="chart-models" class="min-h-[300px]"></div>
+                        </div>
+
+                        <!-- Chart 3: Occupancy -->
+                        <div class="lg:col-span-2 bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl">
+                            <div class="flex justify-between items-center mb-6">
+                                <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest">Occupazione Settori Scaffali</h3>
+                                <span class="text-[10px] bg-slate-800 px-2 py-1 rounded text-slate-400 border border-slate-700">Mappa Calore Corrente</span>
+                            </div>
+                            <div id="chart-occupancy" class="min-h-[200px]"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tab: Add -->
+                <section id="tab-add" class="app-tab hidden max-w-2xl mx-auto space-y-6">
+                    <h1 class="text-2xl font-bold text-center">Registra Nuovo Articolo</h1>
+                    <div class="bg-slate-900 p-8 rounded-3xl border border-slate-800 shadow-2xl">
+                        <form id="addForm" onsubmit="handleAdd(event)" class="space-y-6">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div class="space-y-4">
+                                    <div class="flex items-center justify-between">
+                                        <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">Marca Auto</label>
+                                        <button type="button" onclick="togglePin('marca')" id="pin-marca" class="p-1 text-slate-600 hover:text-orange-500 transition-colors" title="Blocca valore">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                                        </button>
+                                    </div>
+                                    <input type="text" name="marca" id="input-marca" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:ring-2 focus:ring-orange-600 transition !bg-slate-950" placeholder="Es. Fiat">
+                                </div>
+                                <div class="space-y-4">
+                                    <div class="flex items-center justify-between">
+                                        <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">Modello</label>
+                                        <button type="button" onclick="togglePin('modello')" id="pin-modello" class="p-1 text-slate-600 hover:text-orange-500 transition-colors" title="Blocca valore">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                                        </button>
+                                    </div>
+                                    <input type="text" name="modello" id="input-modello" required class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:ring-2 focus:ring-orange-600 transition !bg-slate-950" placeholder="bosch 8 esp">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div class="space-y-4">
+                                    <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">N. Centralina</label>
+                                    <input type="text" name="centralina" id="input-centralina" required class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:ring-2 focus:ring-orange-600 transition font-mono !bg-slate-950" placeholder="P001X...">
+                                </div>
+                                <div class="space-y-4">
+                                    <div class="flex items-center justify-between">
+                                        <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">Posizione (Scaffale:Piano)</label>
+                                        <button type="button" onclick="togglePin('scaffale')" id="pin-scaffale" class="p-1 text-slate-600 hover:text-orange-500 transition-colors" title="Blocca valore">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                                        </button>
+                                    </div>
+                                    <input type="text" name="scaffale" id="input-scaffale" required class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:ring-2 focus:ring-orange-600 transition !bg-slate-950" placeholder="Es. 1:0">
+                                </div>
+                            <div class="space-y-2">
+                                <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">Note Aggiuntive</label>
+                                <textarea name="note" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:ring-2 focus:ring-orange-600 transition min-h-[100px]" placeholder="Danni visibili, compatibilità..."></textarea>
+                            </div>
+                            <div class="pt-4 flex gap-4">
+                                <button type="reset" class="px-6 py-3 rounded-xl border border-slate-700 font-bold hover:bg-slate-800 transition">Reset</button>
+                                <button type="submit" class="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-xl transition-all active:scale-95 shadow-lg shadow-orange-600/20">Registra Articolo</button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+            </div>
+
+            <!-- Mobile Bottom Nav -->
+            <nav class="md:hidden h-16 bg-slate-900 border-t border-slate-800 flex items-center justify-around px-2 shrink-0">
+                <button onclick="switchTab('inventory')" class="flex flex-col items-center gap-1 text-orange-500">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+                    <span class="text-[10px] font-bold">Inventario</span>
+                </button>
+                <button onclick="switchTab('stats')" class="flex flex-col items-center gap-1 text-slate-500">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+                    <span class="text-[10px] font-bold">Stats</span>
+                </button>
+                <button onclick="switchTab('add')" class="flex flex-col items-center gap-1 text-slate-500">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                    <span class="text-[10px] font-bold">Nuovo</span>
+                </button>
+            </nav>
+        </main>
+    </div>
+
+    <!-- Edit Modal -->
+    <div id="editModal" class="hidden fixed inset-0 bg-black/80 z-[150] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-slate-900 w-full max-w-lg rounded-3xl border border-slate-800 shadow-2xl overflow-hidden animate-fade-in">
+            <div class="p-6 border-b border-slate-800 flex justify-between items-center">
+                <h2 class="text-xl font-bold">Modifica Articolo</h2>
+                <button onclick="closeModal('editModal')" class="text-slate-500 hover:text-white transition">✕</button>
+            </div>
+            <div id="editModalContent" class="p-6">
+                <!-- JS Rendered -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="src/app.js"></script>
+</body>
+</html>
