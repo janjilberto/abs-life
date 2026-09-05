@@ -12,6 +12,17 @@ let pinnedFields = {
     scaffale: false
 };
 
+let modelPhotos = {};
+try {
+    modelPhotos = JSON.parse(localStorage.getItem('modelli_foto') || '{}');
+} catch (e) {
+    modelPhotos = {};
+}
+
+function getModelPhoto(modello) {
+    return (modello && modelPhotos[modello]) ? modelPhotos[modello] : '';
+}
+
 // AUTHENTICATION
 function checkPassword() {
     const input = document.getElementById('passInput');
@@ -43,23 +54,43 @@ async function initApp() {
 }
 
 async function fetchArticoli() {
-    const { data, error } = await db.from('articoli').select('*');
-    if (error) {
-        console.error("Errore recupero dati:", error);
-        return;
+    try {
+        const [articoliRes, fotoRes] = await Promise.all([
+            db.from('articoli').select('*'),
+            db.from('modelli_foto').select('*')
+        ]);
+
+        if (articoliRes.error) {
+            console.error("Errore recupero dati articoli:", articoliRes.error);
+            return;
+        }
+
+        if (fotoRes.error) {
+            console.error("Errore recupero foto modelli:", fotoRes.error);
+        } else if (fotoRes.data) {
+            modelPhotos = {};
+            fotoRes.data.forEach(item => {
+                if (item.modello && item.url_foto) {
+                    modelPhotos[item.modello] = item.url_foto;
+                }
+            });
+            localStorage.setItem('modelli_foto', JSON.stringify(modelPhotos));
+        }
+
+        articoliData = (articoliRes.data || []).sort((a, b) => {
+            const posA = String(a.posizione_scaffale || "0:0").split(':').map(Number);
+            const posB = String(b.posizione_scaffale || "0:0").split(':').map(Number);
+            if (posA[0] !== posB[0]) return (posA[0] || 0) - (posB[0] || 0);
+            if (posA[1] !== posB[1]) return (posA[1] || 0) - (posB[1] || 0);
+            return a.numero_centralina.localeCompare(b.numero_centralina);
+        });
+
+        populateFilters();
+        renderInventory();
+        if (currentTab === 'stats') renderStats();
+    } catch (err) {
+        console.error("Errore durante fetchArticoli:", err);
     }
-    
-    articoliData = (data || []).sort((a, b) => {
-        const posA = String(a.posizione_scaffale || "0:0").split(':').map(Number);
-        const posB = String(b.posizione_scaffale || "0:0").split(':').map(Number);
-        if (posA[0] !== posB[0]) return (posA[0] || 0) - (posB[0] || 0);
-        if (posA[1] !== posB[1]) return (posA[1] || 0) - (posB[1] || 0);
-        return a.numero_centralina.localeCompare(b.numero_centralina);
-    });
-    
-    populateFilters();
-    renderInventory();
-    if (currentTab === 'stats') renderStats();
 }
 
 function populateFilters() {
@@ -88,6 +119,107 @@ function populateFilters() {
 
     fMod.innerHTML = '<option value="">Tutti i modelli</option>' + 
         models.map(m => `<option value="${m}" ${m === curMod ? 'selected' : ''}>${m}</option>`).join('');
+
+    populateModelSelector();
+}
+
+function populateModelSelector() {
+    const selector = document.getElementById('selettore-modello');
+    if (!selector) return;
+
+    const models = [...new Set(articoliData.map(i => i.modello).filter(Boolean))].sort();
+    const curMod = selector.value;
+
+    selector.innerHTML = '<option value="" disabled ' + (!curMod ? 'selected' : '') + '>Seleziona un modello...</option>' +
+        models.map(m => `<option value="${m}" ${m === curMod ? 'selected' : ''}>${m}</option>`).join('');
+
+    if (curMod) {
+        handleModelChange(curMod);
+    }
+}
+
+function handleModelChange(modello) {
+    const urlInput = document.getElementById('url-foto');
+    const photoUrl = getModelPhoto(modello);
+    if (urlInput) {
+        urlInput.value = photoUrl;
+    }
+    updatePhotoPreview(photoUrl);
+}
+
+function handleUrlInput(url) {
+    updatePhotoPreview((url || '').trim());
+}
+
+function updatePhotoPreview(url) {
+    const previewContainer = document.getElementById('fotoPreviewContainer');
+    const previewImg = document.getElementById('fotoPreviewImg');
+    if (!previewContainer || !previewImg) return;
+
+    if (url) {
+        previewImg.src = url;
+        previewContainer.classList.remove('hidden');
+        previewImg.onerror = () => {
+            previewContainer.classList.add('hidden');
+        };
+    } else {
+        previewContainer.classList.add('hidden');
+    }
+}
+
+async function handleSavePhoto(event) {
+    if (event) event.preventDefault();
+    const selector = document.getElementById('selettore-modello');
+    const urlInput = document.getElementById('url-foto');
+    const submitBtn = event?.target?.querySelector('button[type="submit"]') || document.querySelector('#fotoForm button[type="submit"]');
+
+    if (!selector || !selector.value) {
+        toast("⚠️ Seleziona prima un modello", "error");
+        return;
+    }
+
+    const modello = selector.value;
+    const url = urlInput ? urlInput.value.trim() : '';
+
+    const originalBtnText = submitBtn ? submitBtn.innerHTML : '';
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.classList.add('opacity-70');
+        submitBtn.innerHTML = '<span class="inline-block animate-spin mr-2">⏳</span> Salvataggio...';
+    }
+
+    try {
+        if (url) {
+            const { error } = await db.from('modelli_foto').upsert({
+                modello: modello,
+                url_foto: url
+            }, { onConflict: 'modello' });
+
+            if (error) throw error;
+
+            modelPhotos[modello] = url;
+            toast(`📷 Foto associata a "${modello}"`);
+        } else {
+            const { error } = await db.from('modelli_foto').delete().eq('modello', modello);
+            if (error) throw error;
+
+            delete modelPhotos[modello];
+            toast(`🗑️ Foto rimossa per "${modello}"`);
+        }
+
+        localStorage.setItem('modelli_foto', JSON.stringify(modelPhotos));
+        updatePhotoPreview(url);
+        renderInventory();
+    } catch (err) {
+        console.error("Errore salvataggio foto su Supabase:", err);
+        toast("❌ Errore salvataggio su Supabase", "error");
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.classList.remove('opacity-70');
+            submitBtn.innerHTML = originalBtnText;
+        }
+    }
 }
 
 // TAB NAVIGATION
@@ -120,6 +252,7 @@ function switchTab(tabId) {
         renderInventory();
     }
     if (tabId === 'stats') renderStats();
+    if (tabId === 'foto') populateModelSelector();
 }
 
 // INVENTORY RENDERING
@@ -144,8 +277,21 @@ function renderInventory() {
         return matchesSearch && matchesMarca && matchesPos && matchesMod;
     });
 
-    body.innerHTML = filtered.map((item, index) => `
+    body.innerHTML = filtered.map((item, index) => {
+        const photoUrl = getModelPhoto(item.modello);
+        return `
         <tr onclick="openDetailsModal('${item.numero_centralina.replace(/'/g, "\\'")}')" class="hover:bg-orange-500/5 border-b border-slate-800/50 group cursor-pointer ${highlightedId === item.numero_centralina ? 'flash-red-effect' : ''}" data-id="${item.numero_centralina}" style="transition-delay: ${index * 30}ms">
+            <td class="p-4 w-16">
+                ${photoUrl ? `
+                    <div class="w-10 h-10 rounded-xl overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center shrink-0">
+                        <img src="${photoUrl}" alt="${item.modello}" class="w-full h-full object-cover" onerror="this.parentElement.innerHTML='<div class=\\'w-full h-full flex items-center justify-center text-slate-600\\'><svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'16\\' height=\\'16\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'2\\' stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\'><rect width=\\'18\\' height=\\'18\\' x=\\'3\\' y=\\'3\\' rx=\\'2\\' ry=\\'2\\'/><circle cx=\\'9\\' cy=\\'9\\' r=\\'2\\'/><path d=\\'m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21\\'/></svg></div>'">
+                    </div>
+                ` : `
+                    <div class="w-10 h-10 rounded-xl border border-slate-800/80 bg-slate-950/60 text-slate-600 flex items-center justify-center shrink-0" title="Nessuna foto associata">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-40"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                    </div>
+                `}
+            </td>
             <td class="p-4">
                 <span class="px-2 py-1 bg-slate-950 rounded text-xs font-mono text-orange-400 border border-orange-400/20">
                     ${item.posizione_scaffale}
@@ -167,7 +313,8 @@ function renderInventory() {
                 </div>
             </td>
         </tr>
-    `).join('');
+        `;
+    }).join('');
 
     // Trigger fade-in immediately to prevent shift bug
     body.querySelectorAll('tr').forEach(r => r.classList.add('loaded'));
@@ -316,8 +463,15 @@ function openDetailsModal(centralina) {
     title.innerText = "Dettagli Articolo";
     modal.classList.remove('hidden');
 
+    const photoUrl = getModelPhoto(item.modello);
+
     content.innerHTML = `
         <div class="space-y-6">
+            ${photoUrl ? `
+                <div class="w-full h-44 rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center p-2">
+                    <img src="${photoUrl}" alt="${item.modello}" class="max-h-full max-w-full object-contain rounded-lg" onerror="this.parentElement.style.display='none'">
+                </div>
+            ` : ''}
             <div class="flex items-start justify-between">
                 <div>
                     <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Codice Centralina</div>
@@ -456,38 +610,258 @@ function renderStats() {
 function renderPieChart(selector, data) {
     const el = document.querySelector(selector);
     el.innerHTML = '';
-    const width = el.clientWidth;
-    const height = 300;
-    const radius = Math.min(width, height) / 2;
+
+    if (!data || data.length === 0) {
+        el.innerHTML = '<div class="h-64 flex items-center justify-center text-slate-500 text-sm">Nessun dato disponibile</div>';
+        return;
+    }
+
+    const totalQty = d3.sum(data, d => d[1]) || 1;
+    const width = el.clientWidth || 360;
+    const height = 320;
+    const radius = Math.min(width * 0.42, height * 0.42);
+    const innerRadius = radius * 0.52;
+    const outerRadius = radius * 0.78;
+    const hoverOuterRadius = radius * 0.92;
+    const hoverInnerRadius = radius * 0.48;
 
     const svg = d3.select(selector)
         .append("svg")
-        .attr("width", width)
+        .attr("viewBox", `0 0 ${width} ${height}`)
+        .attr("width", "100%")
         .attr("height", height)
-        .append("g")
+        .style("overflow", "visible");
+
+    // Glow filter for interactive highlight
+    const defs = svg.append("defs");
+    const filter = defs.append("filter")
+        .attr("id", "glow-filter")
+        .attr("x", "-50%")
+        .attr("y", "-50%")
+        .attr("width", "200%")
+        .attr("height", "200%");
+    filter.append("feGaussianBlur")
+        .attr("stdDeviation", "4")
+        .attr("result", "coloredBlur");
+    const feMerge = filter.append("feMerge");
+    feMerge.append("feMergeNode").attr("in", "coloredBlur");
+    feMerge.append("feMergeNode").attr("in", "SourceGraphic");
+
+    const g = svg.append("g")
         .attr("transform", `translate(${width / 2}, ${height / 2})`);
+
+    const modernPalette = [
+        '#f97316', '#38bdf8', '#34d399', '#a78bfa', '#f472b6',
+        '#fbbf24', '#2dd4bf', '#818cf8', '#fb7185', '#c084fc'
+    ];
 
     const color = d3.scaleOrdinal()
         .domain(data.map(d => d[0]))
-        .range(d3.schemeCategory10);
+        .range(modernPalette);
 
-    const pie = d3.pie().value(d => d[1]);
-    const arc = d3.arc().innerRadius(radius * 0.5).outerRadius(radius * 0.8);
+    const pie = d3.pie()
+        .value(d => d[1])
+        .sort(null)
+        .padAngle(0.02);
 
-    svg.selectAll('path')
-        .data(pie(data))
+    const arc = d3.arc()
+        .innerRadius(innerRadius)
+        .outerRadius(outerRadius)
+        .cornerRadius(4);
+
+    const arcHover = d3.arc()
+        .innerRadius(hoverInnerRadius)
+        .outerRadius(hoverOuterRadius)
+        .cornerRadius(6);
+
+    // Center Display Group
+    const centerG = g.append("g")
+        .attr("class", "center-info")
+        .attr("text-anchor", "middle")
+        .attr("pointer-events", "none");
+
+    const centerLabel = centerG.append("text")
+        .attr("y", -8)
+        .attr("class", "fill-slate-400 font-bold uppercase tracking-widest text-[10px]")
+        .text("Totale ABS");
+
+    const centerValue = centerG.append("text")
+        .attr("y", 18)
+        .attr("class", "fill-white font-mono font-bold text-2xl")
+        .text(totalQty);
+
+    const centerSub = centerG.append("text")
+        .attr("y", 34)
+        .attr("class", "fill-orange-400 font-medium text-[11px]")
+        .text(`${data.length} marche`);
+
+    // Dynamic Callout Group (Floating leader line & label on hover)
+    const calloutG = g.append("g")
+        .attr("class", "callout-layer")
+        .attr("pointer-events", "none");
+
+    // Slices
+    const pieData = pie(data);
+    const slices = g.selectAll('.slice-path')
+        .data(pieData)
         .enter()
         .append('path')
+        .attr('class', 'slice-path')
         .attr('d', arc)
         .attr('fill', d => color(d.data[0]))
         .attr('stroke', '#020617')
-        .style('stroke-width', '2px');
-    
-    // Legend
-    const legend = d3.select(selector).append('div').attr('class', 'flex flex-wrap gap-2 mt-4 text-[10px]');
-    data.slice(0, 8).forEach(d => {
-        legend.append('span').html(`<span style="background:${color(d[0])}" class="inline-block w-2 h-2 rounded-full mr-1"></span> ${d[0]} (${d[1]})`)
-            .attr('class', 'px-2 py-1 bg-slate-800 rounded');
+        .style('stroke-width', '2px')
+        .style('cursor', 'pointer')
+        .style('transition', 'filter 0.25s ease, opacity 0.25s ease');
+
+    // Interactive Hover Events
+    slices
+        .on('mouseenter', function(event, d) {
+            const brand = d.data[0];
+            const qty = d.data[1];
+            const pct = ((qty / totalQty) * 100).toFixed(1);
+            const sliceColor = color(brand);
+
+            // 1. Ingrandisci lo spicchio con animazione fluida
+            d3.select(this)
+                .transition()
+                .duration(280)
+                .ease(d3.easeCubicOut)
+                .attr('d', arcHover)
+                .style('filter', `drop-shadow(0 0 12px ${sliceColor})`);
+
+            // Attenua gli altri spicchi
+            slices.filter(s => s !== d)
+                .transition()
+                .duration(200)
+                .style('opacity', 0.35);
+
+            // 2. Aggiorna display centrale
+            centerLabel.text(brand).attr("class", "fill-orange-400 font-bold text-xs uppercase tracking-wider");
+            centerValue.text(`${qty} pz`).attr("class", "fill-white font-mono font-bold text-2xl");
+            centerSub.text(`${pct}% del totale`).attr("class", "fill-slate-300 font-medium text-[11px]");
+
+            // 3. Mostra a fianco dello spicchio il nome della marca con linea guida elegante
+            calloutG.selectAll('*').remove();
+
+            const midAngle = d.startAngle + (d.endAngle - d.startAngle) / 2;
+            const isRight = Math.sin(midAngle) >= 0;
+
+            const edgeX = Math.sin(midAngle) * (hoverOuterRadius + 6);
+            const edgeY = -Math.cos(midAngle) * (hoverOuterRadius + 6);
+
+            const elbowX = Math.sin(midAngle) * (hoverOuterRadius + 24);
+            const elbowY = -Math.cos(midAngle) * (hoverOuterRadius + 24);
+
+            const endX = elbowX + (isRight ? 32 : -32);
+            const endY = elbowY;
+
+            // Leader Line
+            const line = calloutG.append('polyline')
+                .attr('points', `${edgeX},${edgeY} ${elbowX},${elbowY} ${endX},${endY}`)
+                .attr('fill', 'none')
+                .attr('stroke', sliceColor)
+                .attr('stroke-width', 2)
+                .attr('stroke-linecap', 'round')
+                .attr('stroke-linejoin', 'round')
+                .style('opacity', 0);
+
+            line.transition().duration(250).style('opacity', 1);
+
+            // Floating Label Tag
+            const labelGroup = calloutG.append('g')
+                .attr('transform', `translate(${endX + (isRight ? 6 : -6)}, ${endY})`)
+                .style('opacity', 0);
+
+            const textContent = `${brand} • ${qty} pz (${pct}%)`;
+            const estWidth = textContent.length * 7.2 + 20;
+
+            labelGroup.append('rect')
+                .attr('x', isRight ? 0 : -estWidth)
+                .attr('y', -12)
+                .attr('width', estWidth)
+                .attr('height', 24)
+                .attr('rx', 6)
+                .attr('fill', 'rgba(15, 23, 42, 0.95)')
+                .attr('stroke', sliceColor)
+                .attr('stroke-width', 1.5)
+                .style('filter', 'drop-shadow(0 4px 12px rgba(0,0,0,0.6))');
+
+            labelGroup.append('circle')
+                .attr('cx', isRight ? 10 : -estWidth + 10)
+                .attr('cy', 0)
+                .attr('r', 3.5)
+                .attr('fill', sliceColor);
+
+            labelGroup.append('text')
+                .attr('x', isRight ? 18 : -estWidth + 18)
+                .attr('y', 4)
+                .attr('fill', '#ffffff')
+                .attr('font-size', '11px')
+                .attr('font-weight', '700')
+                .text(textContent);
+
+            labelGroup.transition().duration(250).style('opacity', 1);
+
+            // Highlight corresponding legend badge
+            const safeBrand = brand.replace(/[^a-zA-Z0-9_-]/g, '_');
+            d3.selectAll(`.legend-badge-${safeBrand}`)
+                .classed('ring-2 ring-orange-500 scale-105 bg-slate-700', true);
+        })
+        .on('mouseleave', function(event, d) {
+            const brand = d.data[0];
+
+            d3.select(this)
+                .transition()
+                .duration(250)
+                .ease(d3.easeCubicOut)
+                .attr('d', arc)
+                .style('filter', 'none');
+
+            slices.transition().duration(250).style('opacity', 1);
+
+            centerLabel.text("Totale ABS").attr("class", "fill-slate-400 font-bold uppercase tracking-widest text-[10px]");
+            centerValue.text(totalQty).attr("class", "fill-white font-mono font-bold text-2xl");
+            centerSub.text(`${data.length} marche`).attr("class", "fill-orange-400 font-medium text-[11px]");
+
+            calloutG.selectAll('*')
+                .transition()
+                .duration(200)
+                .style('opacity', 0)
+                .remove();
+
+            const safeBrand = brand.replace(/[^a-zA-Z0-9_-]/g, '_');
+            d3.selectAll(`.legend-badge-${safeBrand}`)
+                .classed('ring-2 ring-orange-500 scale-105 bg-slate-700', false);
+        });
+
+    // Modern Interactive Legend
+    const legend = d3.select(selector)
+        .append('div')
+        .attr('class', 'flex flex-wrap gap-2 mt-4 text-[10px] justify-center');
+
+    data.slice(0, 10).forEach(d => {
+        const brand = d[0];
+        const qty = d[1];
+        const sliceColor = color(brand);
+        const safeBrand = brand.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+        const badge = legend.append('button')
+            .attr('type', 'button')
+            .attr('class', `legend-badge-${safeBrand} px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 font-medium flex items-center gap-1.5 transition-all cursor-pointer border border-slate-700/60`)
+            .html(`<span style="background:${sliceColor}; box-shadow: 0 0 6px ${sliceColor}" class="inline-block w-2.5 h-2.5 rounded-full"></span> <span>${brand}</span> <span class="font-mono text-orange-400 font-bold">(${qty})</span>`);
+
+        badge.on('mouseenter', () => {
+            const targetSlice = slices.filter(s => s.data[0] === brand);
+            if (!targetSlice.empty()) {
+                targetSlice.dispatch('mouseenter');
+            }
+        }).on('mouseleave', () => {
+            const targetSlice = slices.filter(s => s.data[0] === brand);
+            if (!targetSlice.empty()) {
+                targetSlice.dispatch('mouseleave');
+            }
+        });
     });
 }
 
@@ -539,62 +913,101 @@ function renderShelfGrid(selector, shelfData) {
 
     const container = d3.select(selector)
         .append('div')
-        .attr('class', 'flex flex-col-reverse gap-6 p-6 bg-slate-800/20 rounded-3xl border border-slate-800/50 relative');
+        .attr('class', 'flex flex-col-reverse gap-6 p-6 bg-slate-900/90 rounded-3xl border border-slate-800 shadow-2xl relative');
 
-    // Group data by H:D
-    const dataMap = new Map();
-    shelfData.forEach(d => {
-        const key = `${d.height}:${d.distance}`;
-        dataMap.set(key, (dataMap.get(key) || 0) + d.qty);
+    // Mappa articoli per posizione per mostrare dettagli completi
+    const slotItemsMap = new Map();
+    articoliData.forEach(item => {
+        const key = item.posizione_scaffale || "0:0";
+        if (!slotItemsMap.has(key)) slotItemsMap.set(key, []);
+        slotItemsMap.get(key).push(item);
     });
 
-    // Create a robust grid representing a real shelf
     for (let h = minHeight; h <= maxHeight; h++) {
         const row = container.append('div').attr('class', 'flex items-center gap-4');
         
-        // Height label
+        // Etichetta Piano Scaffale (Altezza)
         row.append('span')
-           .attr('class', 'w-10 text-[11px] text-slate-500 font-bold font-mono text-right shrink-0')
-           .text(`${h}:_`);
+           .attr('class', 'w-12 text-xs text-slate-400 font-bold font-mono text-right shrink-0 flex items-center justify-end gap-1')
+           .html(`<span class="text-[9px] text-slate-500 uppercase tracking-wider">P.</span>${h}`);
         
         const shelfFloor = row.append('div')
-           .attr('class', 'flex-1 flex gap-2 h-16 border-b-8 border-slate-700/80 items-end pb-1 px-1 relative');
+           .attr('class', 'flex-1 flex gap-3 h-16 border-b-4 border-slate-700/80 items-end pb-1.5 px-2 relative');
         
-        // Wood effect for the shelf floor
+        // Binario luminoso sotto il piano dello scaffale
         shelfFloor.append('div')
-            .attr('class', 'absolute bottom-[-8px] left-0 right-0 h-1 bg-slate-600/30 rounded-full');
+            .attr('class', 'absolute bottom-[-4px] left-0 right-0 h-0.5 bg-gradient-to-r from-orange-500/20 via-orange-500/40 to-orange-500/20 rounded-full');
 
         for (let d = minDistance; d <= maxDistance; d++) {
-            const qty = dataMap.get(`${h}:${d}`) || 0;
-            const opacity = Math.min(qty / 10, 1);
             const key = `${h}:${d}`;
-            
-            const slot = shelfRow = shelfFloor.append('div')
-                .attr('class', 'flex-1 h-12 rounded-lg relative group transition-all duration-300 hover:scale-105')
-                .style('background-color', qty > 0 ? `rgba(234, 88, 12, ${0.15 + opacity * 0.85})` : 'rgba(15, 23, 42, 0.4)')
-                .style('border', qty > 0 ? '1px solid rgba(234, 88, 12, 0.3)' : '1px dashed rgba(51, 65, 85, 0.3)');
+            const items = slotItemsMap.get(key) || [];
+            const qty = items.reduce((sum, it) => sum + (Number(it.quantita) || 1), 0);
 
-            // Box icon if occupied
+            const slot = shelfFloor.append('div')
+                .attr('class', 'flex-1 h-14 rounded-xl relative group/shelf transition-all duration-300 flex items-center justify-center cursor-pointer')
+                .style('background', qty > 0 ? 'rgba(234, 88, 12, 0.08)' : 'rgba(15, 23, 42, 0.4)')
+                .style('border', qty > 0 ? '1px solid rgba(234, 88, 12, 0.25)' : '1px dashed rgba(51, 65, 85, 0.3)');
+
             if (qty > 0) {
-                slot.attr('class', slot.attr('class') + ' flex items-center justify-center');
-                slot.append('div').attr('class', 'w-4 h-4 bg-orange-950/40 rounded-sm border border-orange-500/20');
-            }
+                // QUADRATO ARANCIONE: presente normalmente, si diffrange e scompare al passaggio del mouse
+                slot.append('div')
+                    .attr('class', 'shelf-square w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-amber-600 border border-orange-300/40 shadow-[0_0_12px_rgba(234,88,12,0.4)] flex items-center justify-center font-mono font-bold text-xs text-slate-950 transition-all duration-300 ease-out transform group-hover/shelf:scale-0 group-hover/shelf:opacity-0 group-hover/shelf:rotate-45 select-none')
+                    .text(qty);
 
-            // Info bubble
-            slot.append('div')
-                .attr('class', 'hidden group-hover:block absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700 p-2 rounded-lg text-[10px] whitespace-nowrap z-50 shadow-2xl')
-                .html(`<span class="text-orange-500 font-bold">${h}:${d}</span><br>Carico: ${qty} unità`);
+                // CONTENITORE PALLINI DIFFRATTI:
+                // Al passaggio del mouse compaiono esattamente `qty` pallini arancioni
+                const dotsContainer = slot.append('div')
+                    .attr('class', 'shelf-dots-cluster absolute inset-0 pointer-events-none flex flex-wrap items-center justify-center gap-1.5 p-2 overflow-hidden');
+
+                const dotSizeClass = qty > 16 ? 'w-1.5 h-1.5' : (qty > 8 ? 'w-2 h-2' : 'w-2.5 h-2.5');
+
+                for (let i = 0; i < qty; i++) {
+                    const delay = Math.min(i * 25, 400);
+                    dotsContainer.append('span')
+                        .attr('class', `diffract-dot ${dotSizeClass} rounded-full bg-orange-400 border border-orange-200 shadow-[0_0_8px_#f97316] transition-all duration-300 ease-out transform scale-0 opacity-0 group-hover/shelf:scale-100 group-hover/shelf:opacity-100 dot-pulse`)
+                        .style('transition-delay', `${delay}ms`)
+                        .style('animation-delay', `${(i * 0.1).toFixed(2)}s`);
+                }
+
+                // Tooltip scenico con dettagli del settore
+                const tooltip = slot.append('div')
+                    .attr('class', 'hidden group-hover/shelf:flex flex-col gap-1 absolute -top-20 left-1/2 -translate-x-1/2 bg-slate-950/95 backdrop-blur-md border border-orange-500/40 p-2.5 rounded-xl text-xs whitespace-nowrap z-[120] shadow-[0_10px_25px_rgba(0,0,0,0.8)] pointer-events-none animate-fade-in');
+
+                tooltip.append('div')
+                    .attr('class', 'flex items-center gap-2 border-b border-slate-800 pb-1')
+                    .html(`<span class="px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 font-mono font-bold text-[10px] border border-orange-500/30">Settore ${h}:${d}</span> <span class="font-bold text-white">${qty} ABS ${qty === 1 ? 'presente' : 'presenti'}</span>`);
+
+                const breakdown = tooltip.append('div')
+                    .attr('class', 'text-[10px] text-slate-400 space-y-0.5');
+
+                items.slice(0, 3).forEach(it => {
+                    breakdown.append('div')
+                        .html(`<span class="text-orange-400 font-bold">${it.marca_auto}</span> ${it.modello} <span class="text-slate-500 font-mono">(qt: ${it.quantita})</span>`);
+                });
+
+                if (items.length > 3) {
+                    breakdown.append('div')
+                        .attr('class', 'text-slate-500 italic text-[9px]')
+                        .text(`+ altri ${items.length - 3} articoli...`);
+                }
+
+            } else {
+                // Slot vuoto
+                slot.append('span')
+                    .attr('class', 'text-[10px] text-slate-600 font-mono opacity-40')
+                    .text(`${h}:${d}`);
+            }
         }
     }
 
-    // Distance footer labels
-    const footer = container.append('div').attr('class', 'flex items-center gap-4');
-    footer.append('div').attr('class', 'w-10'); // spacer
-    const distRow = footer.append('div').attr('class', 'flex-1 flex gap-2');
+    // Footer per colonne (Distanza / Campata)
+    const footer = container.append('div').attr('class', 'flex items-center gap-4 pt-2 border-t border-slate-800/60');
+    footer.append('div').attr('class', 'w-12 text-[10px] text-slate-500 font-bold text-right').text('COL');
+    const distRow = footer.append('div').attr('class', 'flex-1 flex gap-3 px-2');
     for (let d = minDistance; d <= maxDistance; d++) {
         distRow.append('span')
-            .attr('class', 'flex-1 text-center text-[11px] text-slate-500 font-bold font-mono')
-            .text(`_:${d}`);
+            .attr('class', 'flex-1 text-center text-[11px] text-slate-400 font-bold font-mono')
+            .text(`C.${d}`);
     }
 }
 
@@ -705,6 +1118,10 @@ window.togglePin = togglePin;
 window.exportToExcel = exportToExcel;
 window.handleCSVImport = handleCSVImport;
 window.renderInventory = renderInventory; // Exposed for filter onchange
+window.handleModelChange = handleModelChange;
+window.handleSavePhoto = handleSavePhoto;
+window.handleUrlInput = handleUrlInput;
+window.populateModelSelector = populateModelSelector;
 window.debouncedSearch = () => { clearTimeout(window.searchTimer); window.searchTimer = setTimeout(renderInventory, 300); };
 
 // Run

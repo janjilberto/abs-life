@@ -1,0 +1,147 @@
+================================================================================
+  GUIDA E ISTRUZIONI PER LA CONFIGURAZIONE DEL BACKEND (SUPABASE)
+================================================================================
+
+Questo documento illustra l'architettura consigliata per memorizzare le foto
+dei modelli ABS su Supabase, i comandi SQL pronti da eseguire nel SQL Editor
+e la configurazione delle policy RLS (Row Level Security).
+
+--------------------------------------------------------------------------------
+1. ARCHITETTURA RACCOMANDATA: TABELLA DEDICATA `modelli_foto`
+--------------------------------------------------------------------------------
+Poiché l'obiettivo è associare una foto specifica a ciascun *modello di ABS*
+(es. "bosch 8", "bosch 5.3", "ate mk60") e NON a ogni singola centralina fisica
+presente nello scaffale, la soluzione ottimale, pulita e scalabile è creare
+una tabella separata:
+
+  `public.modelli_foto`
+  - modello (TEXT PRIMARY KEY) -> nome univoco del modello
+  - url_foto (TEXT NOT NULL)    -> link web dell'immagine
+  - created_at (TIMESTAMPTZ)    -> data creazione
+  - updated_at (TIMESTAMPTZ)    -> data ultimo aggiornamento
+
+Vantaggi rispetto ad aggiungere una colonna nella tabella `articoli`:
+  ✓ Normalizzazione: se in magazzino hai 80 pezzi del modello "bosch 8",
+    l'URL viene salvato 1 sola volta invece di ripeterlo su 80 righe.
+  ✓ Manutenzione immediata: se cambi o aggiorni l'immagine di un modello,
+    si aggiorna istantaneamente per tutte le centraline di quel modello.
+  ✓ Leggerezza e velocità: la tabella conterrà solo poche decine di righe
+    (pari al numero dei tuoi modelli), caricandosi all'istante all'avvio.
+
+--------------------------------------------------------------------------------
+2. SCRIPT SQL COMPLETO DA ESEGUIRE SU SUPABASE
+--------------------------------------------------------------------------------
+Istruzioni operative:
+1. Accedi al tuo pannello Supabase (https://supabase.com/dashboard).
+2. Seleziona il tuo progetto.
+3. Nel menu laterale a sinistra, clicca su "SQL Editor" (icona </>).
+4. Clicca su "+ New query", incolla il blocco sottostante e clicca su "Run" (in basso a destra o tasto Cmd/Ctrl+Invio):
+
+-- =======================================================================
+-- 1. CREAZIONE TABELLA public.modelli_foto
+-- =======================================================================
+CREATE TABLE IF NOT EXISTS public.modelli_foto (
+    modello TEXT PRIMARY KEY,
+    url_foto TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
+-- Indice di ricerca (opzionale poiché modello è già Primary Key)
+CREATE INDEX IF NOT EXISTS idx_modelli_foto_modello ON public.modelli_foto(modello);
+
+-- Commenti informativi sulla tabella e colonne
+COMMENT ON TABLE public.modelli_foto IS 'Associazione tra modelli ABS e URL delle rispettive foto';
+COMMENT ON COLUMN public.modelli_foto.modello IS 'Nome univoco del modello ABS';
+COMMENT ON COLUMN public.modelli_foto.url_foto IS 'URL pubblico dell''immagine web';
+
+-- =======================================================================
+-- 2. CONFIGURAZIONE ROW LEVEL SECURITY (RLS)
+-- =======================================================================
+-- Abilita RLS per garantire la sicurezza e la conformità di Supabase
+ALTER TABLE public.modelli_foto ENABLE ROW LEVEL SECURITY;
+
+-- Policy 1: Lettura (SELECT)
+-- Consente all'app gestionale (che utilizza la chiave 'anon') di leggere tutte le foto
+CREATE POLICY "Consenti lettura foto a tutti"
+ON public.modelli_foto
+FOR SELECT
+TO anon, authenticated
+USING (true);
+
+-- Policy 2: Inserimento (INSERT)
+-- Consente di associare nuove foto ai modelli
+CREATE POLICY "Consenti inserimento foto"
+ON public.modelli_foto
+FOR INSERT
+TO anon, authenticated
+WITH CHECK (true);
+
+-- Policy 3: Aggiornamento (UPDATE)
+-- Consente di modificare l'URL di un modello già esistente
+CREATE POLICY "Consenti aggiornamento foto"
+ON public.modelli_foto
+FOR UPDATE
+TO anon, authenticated
+USING (true)
+WITH CHECK (true);
+
+-- Policy 4: Eliminazione (DELETE)
+-- Consente di rimuovere l'associazione se l'URL viene svuotato
+CREATE POLICY "Consenti rimozione foto"
+ON public.modelli_foto
+FOR DELETE
+TO anon, authenticated
+USING (true);
+
+-- =======================================================================
+-- 3. TRIGGER AUTOMATICO PER updated_at (OPZIONALE MA CONSIGLIATO)
+-- =======================================================================
+CREATE OR REPLACE FUNCTION public.aggiorna_timestamp_modelli_foto()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = TIMEZONE('utc'::text, NOW());
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_aggiorna_timestamp_modelli_foto ON public.modelli_foto;
+
+CREATE TRIGGER trigger_aggiorna_timestamp_modelli_foto
+BEFORE UPDATE ON public.modelli_foto
+FOR EACH ROW
+EXECUTE FUNCTION public.aggiorna_timestamp_modelli_foto();
+
+
+--------------------------------------------------------------------------------
+3. ALTERNATIVA B: COLONNA DIRETTA NELLA TABELLA `articoli`
+--------------------------------------------------------------------------------
+Se invece si preferisse memorizzare la foto direttamente su ogni singolo
+articolo, il comando SQL da eseguire è:
+
+ALTER TABLE public.articoli 
+ADD COLUMN IF NOT EXISTS foto_url TEXT;
+
+(Svantaggio: per associare una foto a un modello bisognerebbe eseguire un
+UPDATE a tappeto su tutti gli articoli con quel modello, sprecando spazio
+e rischiando disallineamenti con i nuovi articoli inseriti in seguito).
+Si raccomanda quindi la Soluzione 1 (`modelli_foto`).
+
+--------------------------------------------------------------------------------
+4. PROSSIMI PASSI PER IL FRONTEND (SRC/APP.JS)
+--------------------------------------------------------------------------------
+Appena eseguito lo script SQL sopra indicato, in src/app.js integreremo:
+
+1. Nel caricamento iniziale (`fetchArticoli`):
+   const { data: fotoData } = await db.from('modelli_foto').select('*');
+   (fotoData || []).forEach(f => { modelPhotos[f.modello] = f.url_foto; });
+
+2. Nel salvataggio del form (`handleSavePhoto`):
+   await db.from('modelli_foto').upsert({
+       modello: modello,
+       url_foto: url
+   }, { onConflict: 'modello' });
+
+3. Nella cancellazione della foto:
+   await db.from('modelli_foto').delete().eq('modello', modello);
+================================================================================
