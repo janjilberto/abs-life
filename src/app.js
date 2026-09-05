@@ -20,7 +20,8 @@ try {
 }
 
 function getModelPhoto(modello) {
-    return (modello && modelPhotos[modello]) ? modelPhotos[modello] : '';
+    const key = normalizeText(modello);
+    return (key && modelPhotos[key]) ? modelPhotos[key] : '';
 }
 
 // AUTHENTICATION
@@ -53,6 +54,12 @@ async function initApp() {
     switchTab('inventory');
 }
 
+
+function normalizeText(text) {
+    if (!text) return "";
+    return text.toString().trim().toUpperCase();
+}
+
 async function fetchArticoli() {
     try {
         const [articoliRes, fotoRes] = await Promise.all([
@@ -71,18 +78,27 @@ async function fetchArticoli() {
             modelPhotos = {};
             fotoRes.data.forEach(item => {
                 if (item.modello && item.url_foto) {
-                    modelPhotos[item.modello] = item.url_foto;
+                    modelPhotos[normalizeText(item.modello)] = item.url_foto;
                 }
             });
             localStorage.setItem('modelli_foto', JSON.stringify(modelPhotos));
         }
 
-        articoliData = (articoliRes.data || []).sort((a, b) => {
+        let rawData = articoliRes.data || [];
+        rawData = rawData.map(item => ({
+            ...item,
+            marca_auto: normalizeText(item.marca_auto),
+            modello: normalizeText(item.modello),
+            posizione_scaffale: normalizeText(item.posizione_scaffale),
+            numero_centralina: normalizeText(item.numero_centralina)
+        }));
+
+        articoliData = rawData.sort((a, b) => {
             const posA = String(a.posizione_scaffale || "0:0").split(':').map(Number);
             const posB = String(b.posizione_scaffale || "0:0").split(':').map(Number);
             if (posA[0] !== posB[0]) return (posA[0] || 0) - (posB[0] || 0);
             if (posA[1] !== posB[1]) return (posA[1] || 0) - (posB[1] || 0);
-            return a.numero_centralina.localeCompare(b.numero_centralina);
+            return String(a.numero_centralina).localeCompare(String(b.numero_centralina));
         });
 
         populateFilters();
@@ -178,7 +194,7 @@ async function handleSavePhoto(event) {
         return;
     }
 
-    const modello = selector.value;
+    const modello = normalizeText(selector.value);
     const url = urlInput ? urlInput.value.trim() : '';
 
     const originalBtnText = submitBtn ? submitBtn.innerHTML : '';
@@ -399,21 +415,21 @@ async function deleteItem() {
 async function handleAdd(event) {
     event.preventDefault();
     const formData = new FormData(event.target);
-    const centralina = formData.get('centralina').trim();
+    const centralina = normalizeText(formData.get('centralina'));
     
     if (!centralina) return;
 
-    const { data: exist } = await db.from('articoli').select('*').eq('numero_centralina', centralina).maybeSingle();
+    const { data: exist } = await db.from('articoli').select('*').ilike('numero_centralina', centralina).maybeSingle();
     
     if(exist) {
-        await db.from('articoli').update({ quantita: exist.quantita + 1 }).eq('numero_centralina', centralina);
+        await db.from('articoli').update({ quantita: exist.quantita + 1 }).eq('id', exist.id);
         triggerHighlight(centralina);
     } else {
         await db.from('articoli').insert([{
-            marca_auto: formData.get('marca').trim(),
-            modello: formData.get('modello').trim(),
+            marca_auto: normalizeText(formData.get('marca')),
+            modello: normalizeText(formData.get('modello')),
             numero_centralina: centralina,
-            posizione_scaffale: formData.get('scaffale').trim(),
+            posizione_scaffale: normalizeText(formData.get('scaffale')),
             note: formData.get('note').trim(),
             quantita: 1
         }]);
@@ -558,10 +574,10 @@ async function handleEditSubmit(event) {
 
     const formData = new FormData(event.target);
     const updates = {
-        marca_auto: formData.get('marca'),
-        modello: formData.get('modello'),
-        posizione_scaffale: formData.get('scaffale'),
-        note: formData.get('note')
+        marca_auto: normalizeText(formData.get('marca')),
+        modello: normalizeText(formData.get('modello')),
+        posizione_scaffale: normalizeText(formData.get('scaffale')),
+        note: formData.get('note').trim()
     };
     
     await db.from('articoli').update(updates).eq('numero_centralina', centralina);
@@ -595,7 +611,7 @@ function renderStats() {
         .sort((a,b) => b[1] - a[1]);
     
     const modelData = d3.rollups(articoliData, v => d3.sum(v, d => d.quantita), d => d.modello)
-        .sort((a,b) => b[1] - a[1]).slice(0, 10);
+        .sort((a,b) => b[1] - a[1]);
 
     const shelfData = articoliData.map(i => {
         const parts = String(i.posizione_scaffale).split(':').map(Number);
@@ -616,14 +632,37 @@ function renderPieChart(selector, data) {
         return;
     }
 
-    const totalQty = d3.sum(data, d => d[1]) || 1;
+    let totalQty = d3.sum(data, d => d[1]) || 1;
+    
+    // Raggruppa fette troppo piccole
+    const threshold = totalQty * 0.02; // 2% minimum
+    let processedData = [];
+    let othersQty = 0;
+    
+    data.forEach(d => {
+        if (d[1] < threshold) {
+            othersQty += d[1];
+        } else {
+            processedData.push(d);
+        }
+    });
+    
+    if (othersQty > 0) {
+        processedData.push(["Altre Marche", othersQty]);
+    }
+    
+    // Riordina decrescente
+    processedData.sort((a, b) => b[1] - a[1]);
+    data = processedData; // Sovrascrive i data che vengono passati a pie(data)
+
+    const uniqueBrands = data.length; // ricalcola quante fette effettivamente ci sono
     const width = el.clientWidth || 360;
-    const height = 320;
-    const radius = Math.min(width * 0.42, height * 0.42);
-    const innerRadius = radius * 0.52;
-    const outerRadius = radius * 0.78;
-    const hoverOuterRadius = radius * 0.92;
-    const hoverInnerRadius = radius * 0.48;
+    const height = 400; // Ingrandito
+    const radius = Math.min(width, height) / 2; 
+    const innerRadius = radius * 0.55; 
+    const outerRadius = radius * 0.85; 
+    const hoverOuterRadius = radius * 0.95;
+    const hoverInnerRadius = radius * 0.52;
 
     const svg = d3.select(selector)
         .append("svg")
@@ -664,15 +703,22 @@ function renderPieChart(selector, data) {
         .sort(null)
         .padAngle(0.02);
 
+    // Limitiamo il cornerRadius in base all'ampiezza dell'angolo per evitare che le fette piccole sporgano
     const arc = d3.arc()
         .innerRadius(innerRadius)
         .outerRadius(outerRadius)
-        .cornerRadius(4);
+        .cornerRadius(d => {
+            const maxRadius = (d.endAngle - d.startAngle) * outerRadius / 2;
+            return Math.min(6, maxRadius);
+        });
 
     const arcHover = d3.arc()
         .innerRadius(hoverInnerRadius)
         .outerRadius(hoverOuterRadius)
-        .cornerRadius(6);
+        .cornerRadius(d => {
+            const maxRadius = (d.endAngle - d.startAngle) * hoverOuterRadius / 2;
+            return Math.min(8, maxRadius);
+        });
 
     // Center Display Group
     const centerG = g.append("g")
@@ -709,8 +755,8 @@ function renderPieChart(selector, data) {
         .attr('class', 'slice-path')
         .attr('d', arc)
         .attr('fill', d => color(d.data[0]))
-        .attr('stroke', '#020617')
-        .style('stroke-width', '2px')
+        .attr('stroke', 'transparent')
+        .style('stroke-width', '0px')
         .style('cursor', 'pointer')
         .style('transition', 'filter 0.25s ease, opacity 0.25s ease');
 
@@ -728,7 +774,8 @@ function renderPieChart(selector, data) {
                 .duration(280)
                 .ease(d3.easeCubicOut)
                 .attr('d', arcHover)
-                .style('filter', `drop-shadow(0 0 12px ${sliceColor})`);
+                .style('filter', `drop-shadow(0 0 12px ${sliceColor})`)
+                .style('opacity', 1);
 
             // Attenua gli altri spicchi
             slices.filter(s => s !== d)
@@ -741,67 +788,8 @@ function renderPieChart(selector, data) {
             centerValue.text(`${qty} pz`).attr("class", "fill-white font-mono font-bold text-2xl");
             centerSub.text(`${pct}% del totale`).attr("class", "fill-slate-300 font-medium text-[11px]");
 
-            // 3. Mostra a fianco dello spicchio il nome della marca con linea guida elegante
-            calloutG.selectAll('*').remove();
-
+            // 3. Spicchio cliccato - Niente pannello esterno, solo aggiornamento centrale
             const midAngle = d.startAngle + (d.endAngle - d.startAngle) / 2;
-            const isRight = Math.sin(midAngle) >= 0;
-
-            const edgeX = Math.sin(midAngle) * (hoverOuterRadius + 6);
-            const edgeY = -Math.cos(midAngle) * (hoverOuterRadius + 6);
-
-            const elbowX = Math.sin(midAngle) * (hoverOuterRadius + 24);
-            const elbowY = -Math.cos(midAngle) * (hoverOuterRadius + 24);
-
-            const endX = elbowX + (isRight ? 32 : -32);
-            const endY = elbowY;
-
-            // Leader Line
-            const line = calloutG.append('polyline')
-                .attr('points', `${edgeX},${edgeY} ${elbowX},${elbowY} ${endX},${endY}`)
-                .attr('fill', 'none')
-                .attr('stroke', sliceColor)
-                .attr('stroke-width', 2)
-                .attr('stroke-linecap', 'round')
-                .attr('stroke-linejoin', 'round')
-                .style('opacity', 0);
-
-            line.transition().duration(250).style('opacity', 1);
-
-            // Floating Label Tag
-            const labelGroup = calloutG.append('g')
-                .attr('transform', `translate(${endX + (isRight ? 6 : -6)}, ${endY})`)
-                .style('opacity', 0);
-
-            const textContent = `${brand} • ${qty} pz (${pct}%)`;
-            const estWidth = textContent.length * 7.2 + 20;
-
-            labelGroup.append('rect')
-                .attr('x', isRight ? 0 : -estWidth)
-                .attr('y', -12)
-                .attr('width', estWidth)
-                .attr('height', 24)
-                .attr('rx', 6)
-                .attr('fill', 'rgba(15, 23, 42, 0.95)')
-                .attr('stroke', sliceColor)
-                .attr('stroke-width', 1.5)
-                .style('filter', 'drop-shadow(0 4px 12px rgba(0,0,0,0.6))');
-
-            labelGroup.append('circle')
-                .attr('cx', isRight ? 10 : -estWidth + 10)
-                .attr('cy', 0)
-                .attr('r', 3.5)
-                .attr('fill', sliceColor);
-
-            labelGroup.append('text')
-                .attr('x', isRight ? 18 : -estWidth + 18)
-                .attr('y', 4)
-                .attr('fill', '#ffffff')
-                .attr('font-size', '11px')
-                .attr('font-weight', '700')
-                .text(textContent);
-
-            labelGroup.transition().duration(250).style('opacity', 1);
 
             // Highlight corresponding legend badge
             const safeBrand = brand.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -868,8 +856,15 @@ function renderPieChart(selector, data) {
 function renderBarChart(selector, data) {
     const el = document.querySelector(selector);
     el.innerHTML = '';
+    
+    el.style.overflowX = 'auto';
+    el.style.overflowY = 'hidden';
+    el.classList.add('custom-scrollbar');
+    
     const margin = {top: 20, right: 20, bottom: 60, left: 40};
-    const width = el.clientWidth - margin.left - margin.right;
+    
+    const minWidth = data.length * 40;
+    const width = Math.max(el.clientWidth || 300, minWidth) - margin.left - margin.right;
     const height = 300 - margin.top - margin.bottom;
 
     const svg = d3.select(selector)
@@ -904,112 +899,205 @@ function renderBarChart(selector, data) {
 
 function renderShelfGrid(selector, shelfData) {
     const el = document.querySelector(selector);
+    if (!el) return;
     el.innerHTML = '';
 
-    const minHeight = d3.min(shelfData, d => d.height) ?? 1;
-    const maxHeight = d3.max(shelfData, d => d.height) ?? 6;
-    const minDistance = d3.min(shelfData, d => d.distance) ?? 0;
-    const maxDistance = d3.max(shelfData, d => d.distance) ?? 5;
+    const minHeight = 0;
+    const maxHeight = 7;
+    const minDistance = 0;
+    const maxDistance = 1;
 
-    const container = d3.select(selector)
+    const rows = maxHeight - minHeight + 1; // 8 piani totali (0-7)
+    const cols = maxDistance - minDistance + 1; // 2 colonne (0-1)
+
+    const colW = 140;
+    const rowH = 65;
+    const shelfD = 100;
+    const t = 8; // spessore pannelli stile blender
+
+    const sWidth = cols * colW + (cols + 1) * t; 
+    const sHeight = rows * rowH + t;
+
+    const scene = d3.select(selector)
         .append('div')
-        .attr('class', 'flex flex-col-reverse gap-6 p-6 bg-slate-900/90 rounded-3xl border border-slate-800 shadow-2xl relative');
+        .attr('class', 'relative w-full h-[550px] flex items-center justify-center bg-slate-900/90 rounded-3xl border border-slate-800 shadow-2xl overflow-hidden cursor-move select-none')
+        .style('perspective', '1600px');
 
-    // Mappa articoli per posizione per mostrare dettagli completi
-    const slotItemsMap = new Map();
-    articoliData.forEach(item => {
-        const key = item.posizione_scaffale || "0:0";
-        if (!slotItemsMap.has(key)) slotItemsMap.set(key, []);
-        slotItemsMap.get(key).push(item);
+    const shelfWrapper = scene.append('div')
+        .attr('class', 'relative')
+        .style('transform-style', 'preserve-3d')
+        .style('transform', 'rotateX(-10deg) rotateY(-35deg) scale(0.8)')
+        .style('width', `${sWidth}px`)
+        .style('height', `${sHeight}px`)
+        .style('transition', 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)');
+
+    let rotX = -10;
+    let rotY = -35;
+    let isDragging = false;
+    let lastMouse = {x: 0, y: 0};
+
+    scene.on('mousedown', (e) => {
+        isDragging = true;
+        lastMouse = {x: e.clientX, y: e.clientY};
+        shelfWrapper.style('transition', 'none');
+    });
+    window.addEventListener('mouseup', () => {
+        if(isDragging) {
+            isDragging = false;
+            shelfWrapper.style('transition', 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)');
+        }
+    });
+    scene.on('mousemove', (e) => {
+        if(!isDragging) return;
+        const deltaX = e.clientX - lastMouse.x;
+        const deltaY = e.clientY - lastMouse.y;
+        rotY += deltaX * 0.5;
+        rotX -= deltaY * 0.5;
+        rotX = Math.max(-85, Math.min(25, rotX));
+        shelfWrapper.style('transform', `rotateX(${rotX}deg) rotateY(${rotY}deg) scale(0.8)`);
+        lastMouse = {x: e.clientX, y: e.clientY};
+    });
+    scene.on('dblclick', () => {
+        rotX = -10; rotY = -35;
+        shelfWrapper.style('transition', 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)')
+                    .style('transform', 'rotateX(-10deg) rotateY(-35deg) scale(0.8)');
     });
 
-    for (let h = minHeight; h <= maxHeight; h++) {
-        const row = container.append('div').attr('class', 'flex items-center gap-4');
-        
-        // Etichetta Piano Scaffale (Altezza)
-        row.append('span')
-           .attr('class', 'w-12 text-xs text-slate-400 font-bold font-mono text-right shrink-0 flex items-center justify-end gap-1')
-           .html(`<span class="text-[9px] text-slate-500 uppercase tracking-wider">P.</span>${h}`);
-        
-        const shelfFloor = row.append('div')
-           .attr('class', 'flex-1 flex gap-3 h-16 border-b-4 border-slate-700/80 items-end pb-1.5 px-2 relative');
-        
-        // Binario luminoso sotto il piano dello scaffale
-        shelfFloor.append('div')
-            .attr('class', 'absolute bottom-[-4px] left-0 right-0 h-0.5 bg-gradient-to-r from-orange-500/20 via-orange-500/40 to-orange-500/20 rounded-full');
+    shelfWrapper.append('div')
+        .attr('class', 'absolute bottom-0 bg-black/90 blur-2xl rounded-full pointer-events-none')
+        .style('left', '-40px')
+        .style('width', `${sWidth + 80}px`)
+        .style('height', `${shelfD + 60}px`)
+        .style('transform-style', 'preserve-3d')
+        .style('transform', `rotateX(90deg) translateZ(5px) translateY(${-shelfD/2}px)`);
 
+    function createBox(parent, x, y, z, w, h, d, colorClass, extraClass="") {
+        const box = parent.append('div')
+            .attr('class', `absolute ${extraClass}`)
+            .style('left', `${x}px`)
+            .style('bottom', `${y}px`)
+            .style('width', `${w}px`)
+            .style('height', `${h}px`)
+            .style('transform-style', 'preserve-3d')
+            .style('transform', `translateZ(${z}px)`);
+
+        box.append('div').attr('class', `absolute inset-0 ${colorClass} brightness-100 border border-black/10`).style('transform', `translateZ(${d/2}px)`);
+        box.append('div').attr('class', `absolute inset-0 ${colorClass} brightness-50 border border-black/10`).style('transform', `rotateY(180deg) translateZ(${d/2}px)`);
+        box.append('div').attr('class', `absolute ${colorClass} brightness-75 border border-black/10`).style('width', `${d}px`).style('height', `${h}px`).style('left', `${w/2 - d/2}px`).style('transform', `rotateY(-90deg) translateZ(${w/2}px)`);
+        box.append('div').attr('class', `absolute ${colorClass} brightness-90 border border-black/10`).style('width', `${d}px`).style('height', `${h}px`).style('left', `${w/2 - d/2}px`).style('transform', `rotateY(90deg) translateZ(${w/2}px)`);
+        box.append('div').attr('class', `absolute ${colorClass} brightness-110 border border-black/10`).style('width', `${w}px`).style('height', `${d}px`).style('top', `${h/2 - d/2}px`).style('transform', `rotateX(90deg) translateZ(${h/2}px)`);
+        box.append('div').attr('class', `absolute ${colorClass} brightness-50 border border-black/10`).style('width', `${w}px`).style('height', `${d}px`).style('top', `${h/2 - d/2}px`).style('transform', `rotateX(-90deg) translateZ(${h/2}px)`);
+        
+        return box;
+    }
+
+    const panelColor = 'bg-[#cbd5e1]';
+    const backColor = 'bg-[#94a3b8]';
+
+    createBox(shelfWrapper, 0, 0, -shelfD/2 + t/2, sWidth, sHeight, t, backColor);
+
+    createBox(shelfWrapper, 0, 0, 0, t, sHeight, shelfD, panelColor);
+    createBox(shelfWrapper, t + colW, 0, 0, t, sHeight, shelfD, panelColor);
+    createBox(shelfWrapper, 2*t + 2*colW, 0, 0, t, sHeight, shelfD, panelColor);
+
+    for(let r=0; r<=rows; r++) {
+        const yPos = r * rowH;
+        createBox(shelfWrapper, t, yPos, 0, colW, t, shelfD, panelColor);
+        createBox(shelfWrapper, 2*t + colW, yPos, 0, colW, t, shelfD, panelColor);
+    }
+
+    const slotItemsMap = new Map();
+    if (typeof articoliData !== 'undefined') {
+        articoliData.forEach(item => {
+            const key = item.posizione_scaffale || "0:0";
+            if (!slotItemsMap.has(key)) slotItemsMap.set(key, []);
+            slotItemsMap.get(key).push(item);
+        });
+    }
+
+    const tooltip = scene.append('div')
+        .attr('class', 'absolute top-6 left-6 bg-slate-950/95 backdrop-blur-md border border-orange-500/40 p-4 rounded-2xl text-xs z-[100] shadow-[0_10px_30px_rgba(0,0,0,0.8)] pointer-events-none opacity-0 transition-opacity duration-300 min-w-[200px]');
+
+    scene.append('div')
+        .attr('class', 'absolute bottom-4 right-4 bg-slate-900/80 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-slate-800 text-[10px] text-slate-400 pointer-events-none flex items-center gap-2')
+        .html('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg> Trascina per ruotare');
+
+    for (let h = minHeight; h <= maxHeight; h++) {
         for (let d = minDistance; d <= maxDistance; d++) {
             const key = `${h}:${d}`;
             const items = slotItemsMap.get(key) || [];
             const qty = items.reduce((sum, it) => sum + (Number(it.quantita) || 1), 0);
+            
+            const leftOffset = d === 0 ? t : 2*t + colW;
+            const bottomOffset = h * rowH + t;
 
-            const slot = shelfFloor.append('div')
-                .attr('class', 'flex-1 h-14 rounded-xl relative group/shelf transition-all duration-300 flex items-center justify-center cursor-pointer')
-                .style('background', qty > 0 ? 'rgba(234, 88, 12, 0.08)' : 'rgba(15, 23, 42, 0.4)')
-                .style('border', qty > 0 ? '1px solid rgba(234, 88, 12, 0.25)' : '1px dashed rgba(51, 65, 85, 0.3)');
+            const hitbox = shelfWrapper.append('div')
+                .attr('class', 'absolute cursor-pointer')
+                .style('left', `${leftOffset}px`)
+                .style('bottom', `${bottomOffset}px`)
+                .style('width', `${colW}px`)
+                .style('height', `${rowH - t}px`)
+                .style('transform-style', 'preserve-3d');
+            
+            hitbox.append('div')
+                .attr('class', 'absolute text-[9px] font-mono font-bold text-slate-500 bg-slate-200/80 px-1 rounded')
+                .style('bottom', '2px')
+                .style('left', '2px')
+                .style('transform', 'translateZ(2px)')
+                .text(`${h}:${d}`);
+
+            const cubes = [];
 
             if (qty > 0) {
-                // QUADRATO ARANCIONE: presente normalmente, si diffrange e scompare al passaggio del mouse
-                slot.append('div')
-                    .attr('class', 'shelf-square w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-amber-600 border border-orange-300/40 shadow-[0_0_12px_rgba(234,88,12,0.4)] flex items-center justify-center font-mono font-bold text-xs text-slate-950 transition-all duration-300 ease-out transform group-hover/shelf:scale-0 group-hover/shelf:opacity-0 group-hover/shelf:rotate-45 select-none')
-                    .text(qty);
+                const absColor = 'bg-[#f97316]'; 
+                const numCubes = Math.min(qty, 8); 
+                const cubeSize = 16;
+                
+                const positions = [
+                    {x: 30, z: 20}, {x: 70, z: 20}, {x: 110, z: 20},
+                    {x: 30, z: -20}, {x: 70, z: -20}, {x: 110, z: -20},
+                    {x: 50, z: 0}, {x: 90, z: 0}
+                ];
 
-                // CONTENITORE PALLINI DIFFRATTI:
-                // Al passaggio del mouse compaiono esattamente `qty` pallini arancioni
-                const dotsContainer = slot.append('div')
-                    .attr('class', 'shelf-dots-cluster absolute inset-0 pointer-events-none flex flex-wrap items-center justify-center gap-1.5 p-2 overflow-hidden');
-
-                const dotSizeClass = qty > 16 ? 'w-1.5 h-1.5' : (qty > 8 ? 'w-2 h-2' : 'w-2.5 h-2.5');
-
-                for (let i = 0; i < qty; i++) {
-                    const delay = Math.min(i * 25, 400);
-                    dotsContainer.append('span')
-                        .attr('class', `diffract-dot ${dotSizeClass} rounded-full bg-orange-400 border border-orange-200 shadow-[0_0_8px_#f97316] transition-all duration-300 ease-out transform scale-0 opacity-0 group-hover/shelf:scale-100 group-hover/shelf:opacity-100 dot-pulse`)
-                        .style('transition-delay', `${delay}ms`)
-                        .style('animation-delay', `${(i * 0.1).toFixed(2)}s`);
+                for(let i=0; i<numCubes; i++) {
+                    const pos = positions[i] || positions[0];
+                    const rx = pos.x + (Math.random()*4 - 2);
+                    const rz = pos.z + (Math.random()*4 - 2);
+                    
+                    const cube = createBox(hitbox, rx - cubeSize/2, 0, rz, cubeSize, cubeSize, cubeSize, absColor, "abs-cube transition-transform duration-300");
+                    cube.selectAll('div').classed('border-orange-900/50', true).classed('border-black/10', false);
+                    cubes.push(cube);
                 }
-
-                // Tooltip scenico con dettagli del settore
-                const tooltip = slot.append('div')
-                    .attr('class', 'hidden group-hover/shelf:flex flex-col gap-1 absolute -top-20 left-1/2 -translate-x-1/2 bg-slate-950/95 backdrop-blur-md border border-orange-500/40 p-2.5 rounded-xl text-xs whitespace-nowrap z-[120] shadow-[0_10px_25px_rgba(0,0,0,0.8)] pointer-events-none animate-fade-in');
-
-                tooltip.append('div')
-                    .attr('class', 'flex items-center gap-2 border-b border-slate-800 pb-1')
-                    .html(`<span class="px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 font-mono font-bold text-[10px] border border-orange-500/30">Settore ${h}:${d}</span> <span class="font-bold text-white">${qty} ABS ${qty === 1 ? 'presente' : 'presenti'}</span>`);
-
-                const breakdown = tooltip.append('div')
-                    .attr('class', 'text-[10px] text-slate-400 space-y-0.5');
-
-                items.slice(0, 3).forEach(it => {
-                    breakdown.append('div')
-                        .html(`<span class="text-orange-400 font-bold">${it.marca_auto}</span> ${it.modello} <span class="text-slate-500 font-mono">(qt: ${it.quantita})</span>`);
-                });
-
-                if (items.length > 3) {
-                    breakdown.append('div')
-                        .attr('class', 'text-slate-500 italic text-[9px]')
-                        .text(`+ altri ${items.length - 3} articoli...`);
-                }
-
-            } else {
-                // Slot vuoto
-                slot.append('span')
-                    .attr('class', 'text-[10px] text-slate-600 font-mono opacity-40')
-                    .text(`${h}:${d}`);
             }
+
+            hitbox.on('mouseenter', () => {
+                tooltip.style('opacity', '1');
+                tooltip.html(`
+                    <div class="flex items-center gap-2 mb-2 pb-2 border-b border-slate-800">
+                        <span class="px-2 py-0.5 rounded bg-orange-500/20 text-orange-400 font-mono font-bold text-xs border border-orange-500/30">Scaffale ${h}:${d}</span>
+                    </div>
+                    <div class="text-white font-bold mb-2 text-sm">${qty} ABS ${qty === 1 ? 'presente' : 'presenti'}</div>
+                    <div class="text-slate-400 space-y-1">
+                        ${items.slice(0,3).map(it => `<div><span class="text-orange-400 font-bold">${it.marca_auto}</span> ${it.modello} <span class="opacity-50">(${it.quantita})</span></div>`).join('')}
+                        ${items.length > 3 ? `<div class="italic text-slate-500 pt-1">+ altri ${items.length - 3} articoli</div>` : ''}
+                    </div>
+                `);
+                
+                cubes.forEach(c => {
+                    const currentZ = c.style('transform').match(/translateZ\(([^)]+)\)/)[1];
+                    c.style('transform', `translateZ(${currentZ}) translateY(4px) scale(1.15) rotateY(10deg)`);
+                });
+            }).on('mouseleave', () => {
+                tooltip.style('opacity', '0');
+                cubes.forEach(c => {
+                    const currentZ = c.style('transform').match(/translateZ\(([^)]+)\)/)[1];
+                    c.style('transform', `translateZ(${currentZ})`);
+                });
+            });
         }
     }
-
-    // Footer per colonne (Distanza / Campata)
-    const footer = container.append('div').attr('class', 'flex items-center gap-4 pt-2 border-t border-slate-800/60');
-    footer.append('div').attr('class', 'w-12 text-[10px] text-slate-500 font-bold text-right').text('COL');
-    const distRow = footer.append('div').attr('class', 'flex-1 flex gap-3 px-2');
-    for (let d = minDistance; d <= maxDistance; d++) {
-        distRow.append('span')
-            .attr('class', 'flex-1 text-center text-[11px] text-slate-400 font-bold font-mono')
-            .text(`C.${d}`);
-    }
 }
+
 
 async function handleCSVImport(event) {
     const file = event.target.files[0];
@@ -1022,10 +1110,10 @@ async function handleCSVImport(event) {
         const data = rows.slice(1).map(row => {
             const cols = row.split(',').map(c => c.trim().replace(/^"|"$/g, '').replace(/""/g, '"'));
             return {
-                posizione_scaffale: cols[0],
-                marca_auto: cols[1],
-                modello: cols[2],
-                numero_centralina: cols[3],
+                posizione_scaffale: normalizeText(cols[0]),
+                marca_auto: normalizeText(cols[1]),
+                modello: normalizeText(cols[2]),
+                numero_centralina: normalizeText(cols[3]),
                 quantita: parseInt(cols[4]) || 1,
                 note: cols[5] || ''
             };
@@ -1126,3 +1214,11 @@ window.debouncedSearch = () => { clearTimeout(window.searchTimer); window.search
 
 // Run
 checkAuth();
+-e 
+window.scrollModelsChart = function(direction) {
+    const el = document.querySelector('#chart-models');
+    if (el) {
+        el.scrollBy({ left: direction * 250, behavior: 'smooth' });
+    }
+};
+
