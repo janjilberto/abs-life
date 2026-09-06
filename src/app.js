@@ -28,8 +28,8 @@ function getModelPhoto(modello) {
 function checkPassword() {
     const input = document.getElementById('passInput');
     if (input.value === PASSWORD_CORRETTA) { 
-        localStorage.setItem('isLoggedIn', 'true'); 
-        document.getElementById('loginModal').classList.add('hidden'); 
+        sessionStorage.setItem('isLoggedIn', 'true'); 
+        document.getElementById('loginModal').classList.add('hidden'); document.getElementById('loginModal').style.display = 'none'; 
         initApp();
     } else { 
         document.getElementById('errorMsg').classList.remove('hidden'); 
@@ -37,13 +37,13 @@ function checkPassword() {
 }
 
 function logout() { 
-    localStorage.removeItem('isLoggedIn'); 
+    sessionStorage.removeItem('isLoggedIn'); 
     window.location.reload(); 
 }
 
 function checkAuth() {
-    if (localStorage.getItem('isLoggedIn') === 'true') {
-        document.getElementById('loginModal').classList.add('hidden');
+    if (sessionStorage.getItem('isLoggedIn') === 'true') {
+        document.getElementById('loginModal').classList.add('hidden'); document.getElementById('loginModal').style.display = 'none';
         initApp();
     }
 }
@@ -331,7 +331,7 @@ function renderInventory() {
                         </div>
 
                         <!-- Prompt -->
-                        <div id="qty-prompt-${safeId}" class="hidden absolute top-1/2 right-0 -translate-y-1/2 z-50 mr-2 bg-slate-900 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.9)] p-4 flex-col items-center justify-center min-w-max animate-fade-in" onclick="event.preventDefault(); event.stopPropagation()">
+                        <div id="qty-prompt-${safeId}" style="display: none;" class="hidden absolute top-1/2 right-0 -translate-y-1/2 z-50 mr-2 bg-slate-900 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.9)] p-4 flex-col items-center justify-center min-w-max animate-fade-in" onclick="event.preventDefault(); event.stopPropagation()">
                             <div class="text-[12px] font-bold text-slate-200 mb-4 whitespace-nowrap">Vuoi alterare le quantità?</div>
                             <div class="flex gap-3 w-full">
                                 <button class="flex-1 bg-emerald-500 hover:bg-emerald-400 text-white text-[11px] px-5 py-2 rounded-xl transition-colors shadow-lg font-bold" onclick="event.preventDefault(); event.stopPropagation(); window.confirmQtyUnlock(event, '${item.numero_centralina.replace(/'/g, "\\'")}', '${safeId}')">Sì</button>
@@ -398,7 +398,7 @@ function triggerHighlight(id) {
 
 function toggleFiltersMenu() {
     const menu = document.getElementById('filtersMenu');
-    const isHidden = menu.classList.toggle('hidden');
+    const isHidden = menu.classList.toggle('hidden'); menu.style.display = isHidden ? 'none' : 'grid';
     const btn = document.getElementById('btnToggleFilters');
     
     if (!isHidden) {
@@ -496,7 +496,7 @@ function openDetailsModal(centralina) {
     if (!item) return;
 
     title.innerText = "Dettagli Articolo";
-    modal.classList.remove('hidden');
+    modal.classList.remove('hidden'); modal.style.display = 'flex';
 
     const photoUrl = getModelPhoto(item.modello);
 
@@ -555,7 +555,7 @@ function openEditModal(centralina) {
     if (!item) return;
 
     title.innerText = "Modifica Articolo";
-    modal.classList.remove('hidden');
+    modal.classList.remove('hidden'); modal.style.display = 'flex';
 
     content.innerHTML = `
         <form id="editForm" onsubmit="handleEditSubmit(event)" class="space-y-4">
@@ -606,7 +606,7 @@ async function handleEditSubmit(event) {
 }
 
 function closeModal(id) {
-    document.getElementById(id).classList.add('hidden');
+    document.getElementById(id).classList.add('hidden'); document.getElementById(id).style.display = 'none';
 }
 
 function toast(msg, type = "success") {
@@ -1253,8 +1253,7 @@ window.promptQtyUnlock = function(event, id) {
     }
     const prompt = document.getElementById('qty-prompt-' + id);
     if(prompt) {
-        prompt.classList.remove('hidden');
-        prompt.classList.add('flex');
+        prompt.classList.remove('hidden'); prompt.classList.add('flex'); prompt.style.display = 'flex';
     }
 };
 
@@ -1262,8 +1261,7 @@ window.cancelQtyUnlock = function(event, id) {
     event.stopPropagation();
     const prompt = document.getElementById('qty-prompt-' + id);
     if(prompt) {
-        prompt.classList.add('hidden');
-        prompt.classList.remove('flex');
+        prompt.classList.add('hidden'); prompt.classList.remove('flex'); prompt.style.display = 'none';
     }
 };
 
@@ -1292,3 +1290,8 @@ window.handleRowClick = function(event, id) {
     }
     openDetailsModal(id);
 };
+
+
+
+
+
