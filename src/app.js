@@ -296,7 +296,7 @@ function renderInventory() {
     body.innerHTML = filtered.map((item, index) => {
         const photoUrl = getModelPhoto(item.modello);
         return `
-        <tr onclick="openDetailsModal('${item.numero_centralina.replace(/'/g, "\\'")}')" class="hover:bg-orange-500/5 border-b border-slate-800/50 group cursor-pointer ${highlightedId === item.numero_centralina ? 'flash-red-effect' : ''}" data-id="${item.numero_centralina}" style="transition-delay: ${index * 30}ms">
+        <tr onclick="window.handleRowClick(event, '${item.numero_centralina.replace(/'/g, "\\'")}')" class="hover:bg-orange-500/5 border-b border-slate-800/50 group cursor-pointer ${highlightedId === item.numero_centralina ? 'flash-red-effect' : ''}" data-id="${item.numero_centralina}" style="transition-delay: ${index * 30}ms">
             <td class="p-4 w-16">
                 ${photoUrl ? `
                     <div class="w-10 h-10 rounded-xl overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center shrink-0">
@@ -316,12 +316,31 @@ function renderInventory() {
             <td class="p-4 font-medium text-slate-200">${item.marca_auto || '-'}</td>
             <td class="p-4 text-slate-300 font-semibold">${item.modello}</td>
             <td class="p-4 font-mono text-xs text-slate-500">${item.numero_centralina}</td>
-            <td class="p-4">
-                <div class="flex items-center gap-3">
-                    <button onclick="event.stopPropagation(); updateQty('${item.numero_centralina.replace(/'/g, "\\'")}', -1)" class="w-8 h-8 flex items-center justify-center bg-slate-800/50 hover:bg-red-900/40 rounded-lg transition-all active:scale-95 text-slate-400 hover:text-red-400">-</button>
-                    <span class="min-w-[24px] text-center font-bold text-slate-200">${item.quantita}</span>
-                    <button onclick="event.stopPropagation(); updateQty('${item.numero_centralina.replace(/'/g, "\\'")}', 1)" class="w-8 h-8 flex items-center justify-center bg-slate-800/50 hover:bg-emerald-900/40 rounded-lg transition-all active:scale-95 text-slate-400 hover:text-emerald-400">+</button>
-                </div>
+            <td class="p-4 qty-cell">
+                ${(() => {
+                    const safeId = item.numero_centralina.replace(/[^a-zA-Z0-9]/g, '_') + '_' + index;
+                    const isUnlocked = window.unlockedQtyRows && window.unlockedQtyRows.has(item.numero_centralina);
+                    return `
+                    <div class="relative flex items-center justify-center gap-3 w-max rounded-lg">
+                        <button onclick="event.stopPropagation(); updateQty('${item.numero_centralina.replace(/'/g, "\\'")}', -1)" class="w-8 h-8 flex items-center justify-center bg-slate-800/50 hover:bg-red-900/40 rounded-lg transition-all active:scale-95 text-slate-400 hover:text-red-400">-</button>
+                        <span class="min-w-[24px] text-center font-bold text-slate-200">${item.quantita}</span>
+                        <button onclick="event.stopPropagation(); updateQty('${item.numero_centralina.replace(/'/g, "\\'")}', 1)" class="w-8 h-8 flex items-center justify-center bg-slate-800/50 hover:bg-emerald-900/40 rounded-lg transition-all active:scale-95 text-slate-400 hover:text-emerald-400">+</button>
+                        
+                        <!-- Premium Glass Cover -->
+                        <div id="qty-cover-${safeId}" class="absolute inset-0 -mx-1.5 z-10 bg-white/5 backdrop-blur-[1px] shadow-[inset_0_1px_1px_rgba(255,255,255,0.1),0_4px_12px_rgba(0,0,0,0.5)] rounded-lg cursor-pointer transition-all duration-300 border border-white/10 hover:bg-white/10 ${isUnlocked ? 'opacity-0 pointer-events-none' : ''}" onclick="event.preventDefault(); event.stopPropagation(); window.promptQtyUnlock(event, '${safeId}')">
+                        </div>
+
+                        <!-- Prompt -->
+                        <div id="qty-prompt-${safeId}" class="hidden absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.9)] p-4 flex-col items-center justify-center min-w-max animate-fade-in" onclick="event.preventDefault(); event.stopPropagation()">
+                            <div class="text-[12px] font-bold text-slate-200 mb-4 whitespace-nowrap">Vuoi alterare le quantità?</div>
+                            <div class="flex gap-3 w-full">
+                                <button class="flex-1 bg-emerald-500 hover:bg-emerald-400 text-white text-[11px] px-5 py-2 rounded-xl transition-colors shadow-lg font-bold" onclick="event.preventDefault(); event.stopPropagation(); window.confirmQtyUnlock(event, '${item.numero_centralina.replace(/'/g, "\\'")}', '${safeId}')">Sì</button>
+                                <button class="flex-1 bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-5 py-2 rounded-xl transition-colors shadow-lg font-bold" onclick="event.preventDefault(); event.stopPropagation(); window.cancelQtyUnlock(event, '${safeId}')">No</button>
+                            </div>
+                        </div>
+                    </div>
+                    `;
+                })()}
             </td>
             <td class="p-4 text-right">
                 <div class="text-slate-600 group-hover:text-orange-500/50 transition-colors">
@@ -1214,7 +1233,6 @@ window.debouncedSearch = () => { clearTimeout(window.searchTimer); window.search
 
 // Run
 checkAuth();
--e 
 window.scrollModelsChart = function(direction) {
     const el = document.querySelector('#chart-models');
     if (el) {
@@ -1222,3 +1240,55 @@ window.scrollModelsChart = function(direction) {
     }
 };
 
+
+
+
+window.unlockedQtyRows = new Set();
+window.qtyUnlockTimers = {};
+
+window.promptQtyUnlock = function(event, id) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const prompt = document.getElementById('qty-prompt-' + id);
+    if(prompt) {
+        prompt.classList.remove('hidden');
+        prompt.classList.add('flex');
+    }
+};
+
+window.cancelQtyUnlock = function(event, id) {
+    event.stopPropagation();
+    const prompt = document.getElementById('qty-prompt-' + id);
+    if(prompt) {
+        prompt.classList.add('hidden');
+        prompt.classList.remove('flex');
+    }
+};
+
+window.confirmQtyUnlock = function(event, rawId, safeId) {
+    event.stopPropagation();
+    window.unlockedQtyRows.add(rawId);
+    window.cancelQtyUnlock(event, safeId);
+    
+    const cover = document.getElementById('qty-cover-' + safeId);
+    if(cover) {
+        cover.classList.add('opacity-0', 'pointer-events-none');
+    }
+
+    if(window.qtyUnlockTimers[rawId]) clearTimeout(window.qtyUnlockTimers[rawId]);
+    
+    window.qtyUnlockTimers[rawId] = setTimeout(() => {
+        window.unlockedQtyRows.delete(rawId);
+        const coverEl = document.getElementById('qty-cover-' + safeId);
+        if(coverEl) coverEl.classList.remove('opacity-0', 'pointer-events-none');
+    }, 6000); 
+};
+
+window.handleRowClick = function(event, id) {
+    if (event && event.target && event.target.closest('.qty-cell')) {
+        return;
+    }
+    openDetailsModal(id);
+};
