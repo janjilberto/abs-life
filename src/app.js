@@ -323,7 +323,7 @@ function renderInventory() {
                     return `
                     <div class="relative flex items-center justify-center gap-3 w-max rounded-lg">
                         <button onclick="event.stopPropagation(); updateQty('${item.numero_centralina.replace(/'/g, "\\'")}', -1)" class="w-8 h-8 flex items-center justify-center bg-slate-800/50 hover:bg-red-900/40 rounded-lg transition-all active:scale-95 text-slate-400 hover:text-red-400">-</button>
-                        <span class="min-w-[24px] text-center font-bold text-slate-200">${item.quantita}</span>
+                        <span class="min-w-[24px] text-center font-bold text-slate-200 relative z-20 pointer-events-none drop-shadow-md">${item.quantita}</span>
                         <button onclick="event.stopPropagation(); updateQty('${item.numero_centralina.replace(/'/g, "\\'")}', 1)" class="w-8 h-8 flex items-center justify-center bg-slate-800/50 hover:bg-emerald-900/40 rounded-lg transition-all active:scale-95 text-slate-400 hover:text-emerald-400">+</button>
                         
                         <!-- Premium Glass Cover -->
@@ -331,7 +331,7 @@ function renderInventory() {
                         </div>
 
                         <!-- Prompt -->
-                        <div id="qty-prompt-${safeId}" class="hidden absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.9)] p-4 flex-col items-center justify-center min-w-max animate-fade-in" onclick="event.preventDefault(); event.stopPropagation()">
+                        <div id="qty-prompt-${safeId}" class="hidden absolute top-1/2 right-0 -translate-y-1/2 z-50 mr-2 bg-slate-900 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.9)] p-4 flex-col items-center justify-center min-w-max animate-fade-in" onclick="event.preventDefault(); event.stopPropagation()">
                             <div class="text-[12px] font-bold text-slate-200 mb-4 whitespace-nowrap">Vuoi alterare le quantità?</div>
                             <div class="flex gap-3 w-full">
                                 <button class="flex-1 bg-emerald-500 hover:bg-emerald-400 text-white text-[11px] px-5 py-2 rounded-xl transition-colors shadow-lg font-bold" onclick="event.preventDefault(); event.stopPropagation(); window.confirmQtyUnlock(event, '${item.numero_centralina.replace(/'/g, "\\'")}', '${safeId}')">Sì</button>
